@@ -1,0 +1,256 @@
+ServiceGuard. Dokumentacja projektu
+
+
+1. Wprowadzenie
+
+ServiceGuard to narzędzie monitorujące usługi systemu Windows 11.
+
+2. Wymagania
+
+Do działania potrzebny jest Windows 11 w wersji Pro oraz uprawnienia administratora, bez których nie da się
+zatrzymać ani wyłączyć usługi. Narzędzie przygotowane zostało jako plik exe nie wymagający niczego dodatkowego. Pełny zakres wykrywania
+wymaga dodatkowo włączenia audytu zdarzeń i instalacji narzędzia Sysmon, ale program działa także bez nich, po prostu z mniejszą liczbą źródeł.
+
+3. Wymagany setup na maszynie Windows 11
+
+Testy prowadzi się w maszynie wirtualnej z zapisanym punktem przywracania, ponieważ tryb
+aktywny realnie zatrzymuje i wyłącza usługi. Wszystkie poniższe polecenia wykonuje się w oknie uruchomionym jako administrator.
+
+Włącz audyt, dzięki któremu system zapisuje zdarzenia o instalacji usług i o tworzeniu procesów. Audyt instalacji usług, czyli zdarzenie 4697:
+
+    auditpol /set /subcategory:"Security System Extension" /success:enable /failure:enable
+
+Audyt tworzenia procesów wraz z linią poleceń, czyli zdarzenie 4688, potrzebny do korelacji:
+
+    auditpol /set /subcategory:"Process Creation" /success:enable
+    reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit" /v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f
+
+W polskiej wersji systemu nazwy podkategorii bywają przetłumaczone i polecenie auditpol może ich nie rozpoznać. Wtedy w edycji Pro te same ustawienia można włączyć graficznie. W narzędziu secpol.msc, w sekcji Konfiguracja zaawansowanych zasad inspekcji, ustawia się inspekcję rozszerzenia systemu
+zabezpieczeń oraz inspekcję tworzenia procesu. Dołączenie wiersza polecenia do zdarzenia 4688
+włącza się w narzędziu gpedit.msc, w gałęzi System.
+
+Na końcu instaluje się Sysmon, czyli funkcje opcjonalną do systemu od Microsoftu, która obserwuje system dokładniej niż standardowe dzienniki. Dołączony plik konfiguracyjny ogranicza go tylko do kluczy usług i
+wybranych procesów, żeby nie generował zbędnego szumu:
+
+    sysmon64 -accepteula -i sysmon-config.xml
+
+Poprawność instalacji sprawdza się komendami sc query Sysmon64 oraz wevtutil gl
+"Microsoft-Windows-Sysmon/Operational".
+
+Sam program uruchamia się przez prawy przycisk myszy i polecenie uruchomienia jako
+administrator. Domyślnie działa w trybie tylko do raportowania. Przy pierwszym uruchomieniu
+tworzy stan odniesienia i zaczyna zapisywać zdarzenia do pliku serviceguard.log leżącego obok
+programu. Tryb aktywny włącza się przez zmianę wartości tryb_dry_run na false w pliku
+config.json i ponowne uruchomienie.
+
+
+4. Jak program działa
+
+Punktem wyjścia jest proste założenie. Czysty system w znanym stanie wygląda inaczej niż
+system, do którego właśnie dopisało się coś obcego. Dlatego przy pierwszym uruchomieniu program
+zapisuje stan odniesienia, listę usług istniejących w czystym systemie. Od tej chwili
+wszystko, co od tego obrazu odbiega, jest kandydatem do sprawdzenia.
+
+W trakcie pracy działają dwa uzupełniające się sposoby obserwacji. Pierwszy to nasłuch zdarzeń
+systemowych, który daje reakcję niemal natychmiastową w chwili, gdy usługa powstaje. Drugi to
+cykliczny przegląd listy usług, domyślnie co trzydzieści sekund, który pełni rolę sieci
+bezpieczeństwa i wyłapuje również zmiany, które z jakiegoś powodu nie wywołały żadnego
+zdarzenia. Sygnały z obu źródeł trafiają do wspólnej kolejki, gdzie jeden wątek je obsługuje na bieżąco. Dla
+każdej usługi pobiera jej szczegóły, sprawdza podpis cyfrowy pliku, nalicza punkty według
+zestawu reguł, dokłada ewentualne powiązanie z procesem, który usługę utworzył, i podejmuje
+decyzję. Każde istotne zdarzenie trafia do pliku logu, na ekran oraz do Dziennika zdarzeń Windows.
+
+
+5. Z czego program czerpie informacje
+
+Program łączy kilka niezależnych źródeł, dzięki czemu brak któregokolwiek z nich nie zatrzymuje
+całości.
+
+Podstawą cyklicznego przeglądu jest bezpośredni odczyt gałęzi rejestru, w której Windows
+przechowuje wszystkie usługi. Program czyta ją wprost, a nie przez wygodniejsze, lecz uboższe
+zapytania systemowe, ponieważ tylko w rejestrze widać pełen obraz, łącznie ze sterownikami i
+wpisami, które standardowe zapytania pomijają. Dzięki temu nawet usługa wpisana prosto do
+rejestru, z pominięciem menedżera usług, zostanie wyłapana przy najbliższym cyklu.
+Nasłuch zdarzeń czerpie z dzienników systemu. Najważniejsze jest zdarzenie o numerze 7045 w
+dzienniku System, czyli komunikat o zainstalowaniu nowej usługi. Towarzyszy mu zdarzenie 7040,
+oznaczające zmianę sposobu uruchamiania usługi, oraz zdarzenie 4697 z dziennika Zabezpieczenia,
+będące odpowiednikiem 7045 pochodzącym z mechanizmu inspekcji.
+
+Osobną rolę pełnią zdarzenia z Sysmona. Sprytny malware potrafi utworzyć usługę,
+zapisując wpis bezpośrednio do rejestru, przez co standardowe zdarzenie o instalacji w ogóle nie
+powstaje. Sysmon obserwuje operacje na rejestrze i zgłasza taki zapis, nawet gdy pominięto
+menedżera usług. Sysmon dostarcza też informacji o tworzeniu procesów,
+co program wykorzystuje do powiązania nowej usługi z procesem, który ją założył. Gdy Sysmona nie
+ma, tę samą rolę w ograniczonym zakresie pełni zdarzenie 4688 z dziennika Zabezpieczenia.
+
+
+6. Jak program ocenia podejrzliwość
+
+Decyzja nie opiera się na jednej cesze, bo to prowadziłoby albo do fałszywych alarmów, albo do
+przeoczeń. Zamiast tego program przyznaje punkty za każdą niepokojącą cechę i je sumuje. Dopiero
+przekroczenie progu uznaje usługę za podejrzaną. Taki sposób ma jeszcze jedną zaletę. Każdy
+alarm ma jasno ustalony powód, bo do wyniku dołączona jest lista czynników, które się na niego złożyły.
+
+Punkty dostaje między innymi plik usługi położony w miejscu, gdzie zwykły użytkownik może pisać,
+a porządne usługi raczej nie siedzą, jak foldery tymczasowe czy katalog pobierania. Punktowany
+jest brak prawidłowego podpisu cyfrowego. Wysoko oceniane jest wywołanie wiersza poleceń,
+programu PowerShell lub podobnego narzędzia w poleceniu uruchamiającym usługę, bo to typowy
+sposób działania napastników. Osobno traktowane jest podszywanie się pod systemowy proces
+svchost uruchamiany spoza właściwego katalogu. Dodatkowe punkty dokłada losowo wyglądająca nazwa
+lub brak opisu, start automatyczny na koncie systemowym, niecytowana ścieżka ze spacją oraz
+powiązanie z procesem, który usługę utworzył.
+
+Zachowaniem sterują dwa progi zapisane w konfiguracji. Próg podejrzenia, domyślnie pięć, po
+przekroczeniu uruchamia reakcję. Próg informacji, domyślnie dwa, wyznacza granicę, poniżej której
+usługi nie są w ogóle zapisywane w dzienniku. Drugi próg wycisza szum z licznych podpisanych
+usług systemowych, które i tak nigdy nie zbliżają się do progu podejrzenia.
+
+
+7. Jak program sprawdza podpis cyfrowy
+
+Podpis cyfrowy pozwala odróżnić legalny komponent Microsoftu od podejrzanego pliku, dlatego jest
+to ważny element oceny. Program sprawdza go na dwa sposoby, w obu przypadkach korzystając z
+funkcji wbudowanych w Windows.
+
+Najpierw sprawdza podpis osadzony bezpośrednio w pliku. Jeśli go nie znajdzie, przechodzi do
+weryfikacji katalogowej, czyli liczy skrót pliku i szuka go w systemowych katalogach
+bezpieczeństwa. Ten drugi krok jest konieczny, ponieważ większość składników Windows, w tym
+sterowniki i wiele bibliotek, nie ma podpisu w samym pliku, lecz jest podpisana właśnie przez
+taki katalog. Bez tego kroku legalne pliki Microsoftu wyglądałyby jak niepodpisane i wywoływały
+fałszywe alarmy. Jeśli ten sam plik ktoś podmienił, jego skrót nie zgodzi się z żadnym
+katalogiem, więc podrobionego pliku weryfikacja katalogowa nie przepuści. Dzięki tej logice
+reguła o katalogu zapisywalnym nie nalicza punktów plikom, które są prawidłowo podpisane. To
+właśnie ona sprawia, że podpisane usługi systemowe leżące w nietypowych miejscach, jak składniki
+programu Windows Defender, nie są błędnie oznaczane.
+
+
+8. Powiązanie z procesem twórcy usługi
+
+Procesy służą do powiązania faktów. Jeśli chwilę przed pojawieniem się nowej usługi program
+widzi, że jakiś proces wywołał polecenie tworzące usługę, łączy te dwie rzeczy i wskazuje proces
+nadrzędny. Rozpoznaje typowe wzorce, jak polecenie tworzenia usługi przez sc.exe, zakładanie
+usługi w PowerShell czy zapis do gałęzi usług w rejestrze. Takie powiązanie podnosi wynik
+podejrzliwości i daje ślad prowadzący do źródła ataku. Samych procesów program nie zatrzymuje,
+traktuje je wyłącznie jako sygnał pomocniczy, ponieważ przy procesach ryzyko pomyłki byłoby
+znacznie większe niż przy usługach.
+
+
+9. Reakcja i tryb pracy
+
+Kiedy wynik przekroczy próg podejrzenia, a usługa nie znajduje się na liście zaufanych wyjątków,
+program zatrzymuje ją i ustawia na stan wyłączony. Opcjonalnie może odłożyć powiązany plik do
+folderu kwarantanny, żeby zachować go do analizy. Jeśli usługa akurat nie była uruchomiona,
+zatrzymanie zwraca wynik negatywny, co jest poprawne, bo nie ma czego zatrzymywać, a wyłączenie
+i tak zostaje zastosowane, aby usługa nie mogła wystartować.
+
+Domyślnie program startuje w trybie tylko do raportowania. Wykrywa i zapisuje, ale nie blokuje.
+Jest to celowe, ponieważ zatrzymanie usługi ma nieodwracalne skutki dla pracy systemu i najpierw
+trzeba sprawdzić, czy reguły trafiają właściwie. Tryb aktywny włącza się jedną zmianą w
+konfiguracji.
+
+
+10. Lista zaufanych usług
+
+Program nigdy nie zatrzymuje usług z listy zaufanych, nawet gdy ich plik zostanie legalnie
+zmieniony, na przykład przez aktualizację systemu. Porównanie nazw jest nieczułe na wielkość
+liter, zgodnie z zasadami Windows. Zestaw nie jest wymyślony, tylko oparty na oficjalnych
+wskazaniach Microsoftu, czyli na liście usług niezalecanych do wyłączania oraz na opisie
+krytycznych usług systemowych. Dołączono do niego rzeczywiste usługi programu Windows Defender,
+które legalnie mieszkają w katalogu danych programów, a także samo narzędzie i Sysmon. Lista jest
+celowo wąska i obejmuje rdzeń systemu. Pozostałych prawidłowych usług nie trzeba wpisywać,
+ponieważ obejmuje je stan odniesienia tworzony przy pierwszym uruchomieniu.
+
+
+11. Stan odniesienia i odporność na braki
+
+Stan odniesienia powstaje z przeglądu rejestru i jest zapisywany do pliku. Przy porównaniu
+program sprawdza ścieżkę pliku usługi oraz jego rozmiar i czas modyfikacji, zamiast liczyć pełny
+skrót przy każdym przebiegu, dzięki czemu praca w tle nie obciąża systemu. W trakcie jednej sesji
+stan jest aktualizowany w pamięci po każdym obsłużonym zdarzeniu, więc ta sama usługa nie jest
+zgłaszana w kółko. Zmiany nie są jednak dopisywane do pliku, i jest to świadoma decyzja. Wykryta,
+podejrzana usługa nie powinna trafić do zaufanego stanu odniesienia, bo po restarcie byłaby już
+traktowana jak znana i nigdy więcej by jej nie sprawdził.
+
+Usługi przypisane do sesji użytkownika mają w nazwie zmienną końcówkę, która zmienia się przy
+każdym zalogowaniu. Program odcina ją przy porównaniu, żeby takie usługi nie wracały masowo jako
+nowe po ponownym zalogowaniu.
+
+Narzędzie działa również bez Sysmona i przy wyłączonym audycie. Rdzeń, czyli wykrycie nowej usługi
+i jej blokowanie, opiera się na zdarzeniu 7045 oraz na przeglądzie rejestru. Sysmon dodaje
+wykrywanie zapisu prosto do rejestru oraz powiązanie z procesem. Brak któregoś źródła oznacza
+mniej danych, a nie zatrzymanie programu.
+
+
+12. Konfiguracja
+
+Zachowaniem programu steruje plik config.json. Najważniejsze opcje to odstęp między przeglądami
+rejestru, próg podejrzenia, próg informacji, tryb tylko do raportowania, włączenie kwarantanny,
+okno czasu na powiązanie z procesem oraz lista fragmentów ścieżek uznawanych za zapisywalne przez
+użytkownika. Plik whitelist.json zawiera listę krótkich nazw usług zaufanych. Oba pliki są
+wczytywane przy starcie, więc po każdej zmianie trzeba uruchomić program ponownie. Krótką nazwę
+usługi, potrzebną do białej listy, sprawdza się poleceniem Get-Service w kolumnie Name.
+
+13. Scenariusze testowe
+
+Testy prowadzi się w maszynie wirtualnej, a monitor uruchamia jako administrator. Dla pierwszych
+trzech scenariuszy wystarczy domyślny tryb raportowania, scenariusz czwarty wymaga trybu aktywnego.
+
+Scenariusz 1, wykrycie nowej usługi i powiązanie z procesem. Utworzenie usługi poleceniem:
+
+    sc.exe create TestA binPath= "cmd.exe /c ping -n 30 127.0.0.1" start= demand
+
+W dzienniku powinien pojawić się wpis kategorii wykrycie dla usługi TestA, ze źródłem system_7045
+lub security_4697 i wynikiem powyżej progu. Jeśli działa Sysmon, wpis zawiera powód
+korelacja_proces i pole proces_nadrzedny wskazujące proces, który usługę utworzył. Po teście:
+sc.exe delete TestA.
+
+Scenariusz 2, ominięcie menedżera usług przez rejestr. Symuluje złośliwe oprogramowanie piszące
+usługę wprost do rejestru:
+
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\TestRej" /v ImagePath /t REG_EXPAND_SZ /d "C:\Windows\Temp\zly.exe" /f
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\TestRej" /v Type /t REG_DWORD /d 16 /f
+
+Mimo braku zdarzenia o instalacji usługa powinna zostać wykryta ze źródłem sysmon_rejestr, a po
+ponownym uruchomieniu monitora także przez sam przegląd rejestru. Po teście: reg delete
+"HKLM\SYSTEM\CurrentControlSet\Services\TestRej" /f.
+
+Scenariusz 3, lista zaufanych. Dopisanie usługi TestA do pliku whitelist.json, ponowne
+uruchomienie monitora i powtórzenie scenariusza pierwszego. Tym razem usługa powinna zostać
+pominięta i nie pojawić się w dzienniku. Po teście usuwa się wpis z listy.
+
+Scenariusz 4, tryb aktywny oraz zatrzymanie i wyłączenie. Do tego scenariusza służy dołączona
+usługa testowa testService.exe. Jest to prawdziwa usługa Windows, która po uruchomieniu czeka w
+pętli i dzięki temu naprawdę jest w stanie uruchomionym, w odróżnieniu od atrapy z wiersza
+poleceń. Kolejność jest istotna, bo usługa musi działać, zanim monitor ją wykryje, inaczej
+zostałaby wyłączona tuż po instalacji, gdy jeszcze nie działa. Przy wyłączonym monitorze, z
+pliku testService.exe umieszczonego w folderze zapisywalnym, na przykład w folderze pobierania:
+
+    testService.exe install
+    sc.exe start TestServiceRun
+    sc.exe query TestServiceRun
+
+Ostatnia komenda ma pokazać stan uruchomiony. Następnie ustawia się tryb_dry_run na false i uruchamia monitor. W dzienniku powinien pojawić się wpis kategorii reakcja z
+potwierdzonym zatrzymaniem i wyłączeniem usługi. Po teście: sc.exe stop TestServiceRun oraz
+testService.exe remove.
+
+14. Struktura plików
+
+Główna pętla znajduje się w pliku main.py. Rozpoznanie środowiska jest w module srodowisko.
+Przegląd rejestru, dane z WMI, stan odniesienia i rozwijanie ścieżek są w module zrodla.
+Weryfikacja podpisu, reguły punktowe i powiązanie z procesem są w module detekcja. Zatrzymywanie
+i wyłączanie są w module reakcja. Zapis zdarzeń jest w module logowanie. Konfigurację trzymają
+pliki config.json, whitelist.json i sysmon-config.xml. Za budowanie odpowiadają build.bat,
+ServiceGuard.spec, version.txt i requirements.txt. Skrypty testowe, w tym usługa testowa
+testService.py, są w folderze tests.
+
+
+15. Znane ograniczenia
+
+Narzędzie nie ma własnego sterownika jądra, więc warstwa reakcji w czasie rzeczywistym zależy od
+Sysmona. Jeśli ktoś go wyłączy albo go nie ma, tracone jest wykrywanie zapisu do rejestru na
+bieżąco, choć przegląd okresowy nadal działa. Prawdziwe systemy klasy EDR mają ten element we
+własnym, chronionym składniku jądra, którego w narzędziu działającym w przestrzeni użytkownika
+nie da się odtworzyć. Lista zaufanych działa po nazwie usługi, więc gdyby napastnik podmienił
+plik prawdziwej usługi z tej listy, narzędzie by jej nie zatrzymało, ale nadal by ją wykryło i
+zapisało. Weryfikacja katalogowa wymaga odczytu pliku, więc plik chwilowo zablokowany spada do
+wyniku podstawowego. Procesów narzędzie nie zatrzymuje.
