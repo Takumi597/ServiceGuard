@@ -1,0 +1,65 @@
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <CheckRevocation>false</CheckRevocation>
+
+  <EventFiltering>
+
+    <RuleGroup name="tworzenie_procesow" groupRelation="or">
+      <ProcessCreate onmatch="include">
+        <Image condition="end with">\sc.exe</Image>
+        <Image condition="end with">\reg.exe</Image>
+        <Image condition="end with">\powershell.exe</Image>
+        <Image condition="end with">\pwsh.exe</Image>
+        <Image condition="end with">\cmd.exe</Image>
+        <Image condition="end with">\rundll32.exe</Image>
+        <Image condition="end with">\regsvr32.exe</Image>
+        <Image condition="end with">\mshta.exe</Image>
+        <Image condition="end with">\wmic.exe</Image>
+        <CommandLine condition="contains">create</CommandLine>
+        <CommandLine condition="contains">binpath</CommandLine>
+        <CommandLine condition="contains">new-service</CommandLine>
+        <CommandLine condition="contains">\services\</CommandLine>
+        <CommandLine condition="contains">-enc</CommandLine>
+        <CommandLine condition="contains">encodedcommand</CommandLine>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <RuleGroup name="rejestr_uslug" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">\CurrentControlSet\Services\</TargetObject>
+        <TargetObject condition="contains">\ControlSet001\Services\</TargetObject>
+        <TargetObject condition="contains">\ControlSet002\Services\</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <RuleGroup name="rejestr_uslug_wykluczenia" groupRelation="or">
+      <RegistryEvent onmatch="exclude">
+        <TargetObject condition="end with">\Start</TargetObject>
+        <Image condition="is">C:\Windows\System32\services.exe</Image>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <RuleGroup name="sterowniki" groupRelation="or">
+      <DriverLoad onmatch="exclude">
+        <Signature condition="contains">Microsoft</Signature>
+        <Signature condition="contains">Windows</Signature>
+      </DriverLoad>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <ProcessTerminate onmatch="exclude" />
+      <NetworkConnect onmatch="exclude" />
+      <ImageLoad onmatch="exclude" />
+      <CreateRemoteThread onmatch="exclude" />
+      <RawAccessRead onmatch="exclude" />
+      <FileCreateStreamHash onmatch="exclude" />
+      <DnsQuery onmatch="exclude" />
+      <FileCreate onmatch="exclude" />
+      <FileDelete onmatch="exclude" />
+      <ProcessAccess onmatch="exclude" />
+      <PipeEvent onmatch="exclude" />
+      <WmiEvent onmatch="exclude" />
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>

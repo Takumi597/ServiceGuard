@@ -1,0 +1,18 @@
+{
+  "interwal_pollingu": 30,
+  "prog_podejrzenia": 5,
+  "prog_informacji": 2,
+  "tryb_dry_run": true,
+  "kwarantanna": false,
+  "katalog_kwarantanny": "kwarantanna",
+  "plik_baseline": "baseline.json",
+  "plik_logu": "serviceguard.log",
+  "okno_korelacji_sekundy": 60,
+  "katalogi_zapisywalne": [
+    "\\temp\\",
+    "\\appdata\\",
+    "\\users\\public\\",
+    "\\programdata\\",
+    "\\downloads\\"
+  ]
+}
